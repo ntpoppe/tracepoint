@@ -7,6 +7,10 @@ static class Program
         // Toggle cleanup: pass "--keep" to inspect the workspace afterwards.
         bool keep = args.Any(a => a.Equals("--keep", StringComparison.OrdinalIgnoreCase));
 
+        // User and Group ID for TRX file permissions, perhaps this should be better handled, not sure how though
+        var uid = "1000";
+        var gid = "1000";
+
         // Find repo root and template directory (relative to this executable's working directory).
         string repoRoot = FindRepoRoot();
         string templateDir = Path.Combine(repoRoot, "judge-template");
@@ -21,7 +25,8 @@ static class Program
         string workRoot = Path.Combine(Path.GetTempPath(), "tracepoint-workspaces");
         Directory.CreateDirectory(workRoot);
 
-        string workDir = Path.Combine(workRoot, Guid.NewGuid().ToString("N"));
+        string guidString = Guid.NewGuid().ToString("N");
+        string workDir = Path.Combine(workRoot, guidString);
         Directory.CreateDirectory(workDir);
 
         Console.WriteLine($"[JudgeRunner] Workspace: {workDir}");
@@ -31,26 +36,91 @@ static class Program
         {
             CopyDirectory(templateDir, workDir);
 
-            // Run dotnet test INSIDE the workspace.
-            var result = RunProcess(
-                fileName: "dotnet",
-                arguments: "test",
+            // To restore NuGet packages since the test run will not have a network
+            string nugetCacheRoot = Path.Combine(workRoot, "_nuget-cache");
+            Directory.CreateDirectory(nugetCacheRoot);
+
+            // Mount point for test container
+            const string nugetMountPath = "/nuget";
+
+            // Run restore with network
+            var restoreResult = RunProcess(
+                fileName: "docker",
+                arguments:
+                    $"run --rm " +
+                    $"--user {uid}:{gid} " +
+                    $"--cpus=1 " +
+                    $"--memory=512m " +
+                    $"--pids-limit=128 " +
+                    $"-v \"{workDir}:/workspace\" " +
+                    $"-v \"{nugetCacheRoot}:{nugetMountPath}\" " +
+                    $"-e NUGET_PACKAGES={nugetMountPath} " +
+                    $"-w /workspace " +
+                    $"mcr.microsoft.com/dotnet/sdk:10.0 " +
+                    $"dotnet restore",
+                workingDirectory: workDir,
+                timeout: TimeSpan.FromMinutes(2)
+            );
+
+            Console.WriteLine("----- dotnet restore STDOUT -----");
+            Console.WriteLine(restoreResult.Stdout);
+            Console.WriteLine("----- dotnet restore STDERR -----");
+            Console.WriteLine(restoreResult.Stderr);
+            Console.WriteLine($"[JudgeRunner] Restore ExitCode: {restoreResult.ExitCode}");
+            Console.WriteLine($"[JudgeRunner] Restore TimedOut: {restoreResult.TimedOut}");
+
+            // No point in running test if restore failed
+            if (restoreResult.TimedOut || restoreResult.ExitCode != 0)
+            {
+                return restoreResult.TimedOut ? 124 : restoreResult.ExitCode;
+            }
+
+            // Run dotnet test with no network
+            var testResult = RunProcess(
+                fileName: "docker",
+                arguments:
+                    $"run --rm " +
+                    $"--network none " +
+                    $"--user {uid}:{gid} " +
+                    $"--cpus=1 " +
+                    $"--memory=512m " +
+                    $"--pids-limit=128 " +
+                    $"-v \"{workDir}:/workspace\" " +
+                    $"-v \"{nugetCacheRoot}:{nugetMountPath}\" " +
+                    $"-e NUGET_PACKAGES={nugetMountPath} " +
+                    $"-w /workspace " +
+                    $"mcr.microsoft.com/dotnet/sdk:10.0 " +
+                    $"dotnet test --no-restore --logger \"trx;LogFileName=results.trx\"",
                 workingDirectory: workDir,
                 timeout: TimeSpan.FromMinutes(2)
             );
 
             Console.WriteLine("----- dotnet test STDOUT -----");
-            Console.WriteLine(result.Stdout);
+            Console.WriteLine(testResult.Stdout);
 
             Console.WriteLine("----- dotnet test STDERR -----");
-            Console.WriteLine(result.Stderr);
+            Console.WriteLine(testResult.Stderr);
 
-            Console.WriteLine($"[JudgeRunner] ExitCode: {result.ExitCode}");
-            Console.WriteLine($"[JudgeRunner] TimedOut: {result.TimedOut}");
+            Console.WriteLine($"[JudgeRunner] ExitCode: {testResult.ExitCode}");
+            Console.WriteLine($"[JudgeRunner] TimedOut: {testResult.TimedOut}");
 
-            // If you want this step to strictly match the acceptance criteria,
-            // treat timeout as failure:
-            int exitCode = result.TimedOut ? 124 : result.ExitCode;
+            Console.WriteLine("----- PARSING TRX FILE -----");
+            string testsDir = Path.Combine(workDir, "tests");
+            string testsProject = Path.Combine(testsDir, "Challenge.Tests");
+            string testResultsDir = Path.Combine(testsProject, "TestResults");
+            string trxFilePath = Path.Combine(testResultsDir, "results.trx");
+
+            if (!File.Exists(trxFilePath))
+            {
+                Console.Error.WriteLine($"ERROR: TRX file not found at: {trxFilePath}");
+                return -1;
+            }
+
+            var json = TrxToJsonConverter.ConvertToJson(guidString, status: "Completed", trxFilePath);
+            Console.WriteLine(json);
+
+            // Treat timeout as failure.
+            int exitCode = testResult.TimedOut ? 124 : testResult.ExitCode;
 
             return exitCode;
         }
