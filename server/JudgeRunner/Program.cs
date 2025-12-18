@@ -36,8 +36,15 @@ static class Program
         {
             CopyDirectory(templateDir, workDir);
 
-            // Run dotnet test INSIDE the workspace.
-            var result = RunProcess(
+            // To restore NuGet packages since the test run will not have a network
+            string nugetCacheRoot = Path.Combine(workRoot, "_nuget-cache");
+            Directory.CreateDirectory(nugetCacheRoot);
+
+            // Mount point for test container
+            const string nugetMountPath = "/nuget";
+
+            // Run restore with network
+            var restoreResult = RunProcess(
                 fileName: "docker",
                 arguments:
                     $"run --rm " +
@@ -46,21 +53,56 @@ static class Program
                     $"--memory=512m " +
                     $"--pids-limit=128 " +
                     $"-v \"{workDir}:/workspace\" " +
+                    $"-v \"{nugetCacheRoot}:{nugetMountPath}\" " +
+                    $"-e NUGET_PACKAGES={nugetMountPath} " +
                     $"-w /workspace " +
                     $"mcr.microsoft.com/dotnet/sdk:10.0 " +
-                    $"dotnet test --logger \"trx;LogFileName=results.trx\"",
+                    $"dotnet restore",
+                workingDirectory: workDir,
+                timeout: TimeSpan.FromMinutes(2)
+            );
+
+            Console.WriteLine("----- dotnet restore STDOUT -----");
+            Console.WriteLine(restoreResult.Stdout);
+            Console.WriteLine("----- dotnet restore STDERR -----");
+            Console.WriteLine(restoreResult.Stderr);
+            Console.WriteLine($"[JudgeRunner] Restore ExitCode: {restoreResult.ExitCode}");
+            Console.WriteLine($"[JudgeRunner] Restore TimedOut: {restoreResult.TimedOut}");
+
+            // No point in running test if restore failed
+            if (restoreResult.TimedOut || restoreResult.ExitCode != 0)
+            {
+                return restoreResult.TimedOut ? 124 : restoreResult.ExitCode;
+            }
+
+            // Run dotnet test with no network
+            var testResult = RunProcess(
+                fileName: "docker",
+                arguments:
+                    $"run --rm " +
+                    $"--network none " +
+                    $"--user {uid}:{gid} " +
+                    $"--cpus=1 " +
+                    $"--memory=512m " +
+                    $"--pids-limit=128 " +
+                    $"-v \"{workDir}:/workspace\" " +
+                    $"-v \"{nugetCacheRoot}:{nugetMountPath}\" " +
+                    $"-e NUGET_PACKAGES={nugetMountPath} " +
+                    $"-w /workspace " +
+                    $"mcr.microsoft.com/dotnet/sdk:10.0 " +
+                    $"dotnet test --no-restore --logger \"trx;LogFileName=results.trx\"",
                 workingDirectory: workDir,
                 timeout: TimeSpan.FromMinutes(2)
             );
 
             Console.WriteLine("----- dotnet test STDOUT -----");
-            Console.WriteLine(result.Stdout);
+            Console.WriteLine(testResult.Stdout);
 
             Console.WriteLine("----- dotnet test STDERR -----");
-            Console.WriteLine(result.Stderr);
+            Console.WriteLine(testResult.Stderr);
 
-            Console.WriteLine($"[JudgeRunner] ExitCode: {result.ExitCode}");
-            Console.WriteLine($"[JudgeRunner] TimedOut: {result.TimedOut}");
+            Console.WriteLine($"[JudgeRunner] ExitCode: {testResult.ExitCode}");
+            Console.WriteLine($"[JudgeRunner] TimedOut: {testResult.TimedOut}");
 
             Console.WriteLine("----- PARSING TRX FILE -----");
             string testsDir = Path.Combine(workDir, "tests");
@@ -71,14 +113,14 @@ static class Program
             if (!File.Exists(trxFilePath))
             {
                 Console.Error.WriteLine($"ERROR: TRX file not found at: {trxFilePath}");
-                return 1;
+                return -1;
             }
 
             var json = TrxToJsonConverter.ConvertToJson(guidString, status: "Completed", trxFilePath);
             Console.WriteLine(json);
 
             // Treat timeout as failure.
-            int exitCode = result.TimedOut ? 124 : result.ExitCode;
+            int exitCode = testResult.TimedOut ? 124 : testResult.ExitCode;
 
             return exitCode;
         }
