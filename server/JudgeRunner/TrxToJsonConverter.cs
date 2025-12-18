@@ -1,14 +1,14 @@
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
-using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Xml;
 using System.Xml.Linq;
 
 public static class TrxToJsonConverter
 {
+    // Flood-hardening: cap any single TRX-derived text field before it enters JSON.
+    private const int MaxFieldChars = 16_000;
+
     public static string ConvertToJson(
         string submissionId,
         string status,     // "completed | compile_error | timed_out | runner_error"
@@ -22,9 +22,9 @@ public static class TrxToJsonConverter
         var diagnostics = new Dictionary<string, object?>
         {
             ["stdout"] = null,
-            ["stderr"] = string.IsNullOrWhiteSpace(stderr) ? null : stderr,
+            ["stderr"] = Trunc(string.IsNullOrWhiteSpace(stderr) ? null : stderr),
             ["trxPath"] = File.Exists(trxFilePath) ? trxFilePath : null,
-            ["note"] = string.IsNullOrWhiteSpace(note) ? null : note
+            ["note"] = Trunc(string.IsNullOrWhiteSpace(note) ? null : note)
         };
 
         // If TRX missing, still output valid JSON
@@ -40,7 +40,20 @@ public static class TrxToJsonConverter
             });
         }
 
-        var doc = XDocument.Load(trxFilePath);
+        // Safer XML load settings (no DTD).
+        var settings = new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null
+        };
+
+        XDocument doc;
+        using (var fs = File.OpenRead(trxFilePath))
+        using (var xr = XmlReader.Create(fs, settings))
+        {
+            doc = XDocument.Load(xr, LoadOptions.None);
+        }
+
         var root = doc.Root ?? throw new InvalidDataException("TRX root missing.");
         XNamespace ns = root.Name.Namespace;
 
@@ -61,14 +74,14 @@ public static class TrxToJsonConverter
         var countersEl = resultSummary?.Element(ns + "Counters");
         var counters = new Dictionary<string, int>
         {
-            ["total"]        = GetIntAttr(countersEl, "total"),
-            ["executed"]     = GetIntAttr(countersEl, "executed"),
-            ["passed"]       = GetIntAttr(countersEl, "passed"),
-            ["failed"]       = GetIntAttr(countersEl, "failed"),
-            ["skipped"]      = GetIntAttr(countersEl, "notExecuted"), // required mapping
-            ["error"]        = GetIntAttr(countersEl, "error"),
-            ["timeout"]      = GetIntAttr(countersEl, "timeout"),
-            ["aborted"]      = GetIntAttr(countersEl, "aborted"),
+            ["total"] = GetIntAttr(countersEl, "total"),
+            ["executed"] = GetIntAttr(countersEl, "executed"),
+            ["passed"] = GetIntAttr(countersEl, "passed"),
+            ["failed"] = GetIntAttr(countersEl, "failed"),
+            ["skipped"] = GetIntAttr(countersEl, "notExecuted"),
+            ["error"] = GetIntAttr(countersEl, "error"),
+            ["timeout"] = GetIntAttr(countersEl, "timeout"),
+            ["aborted"] = GetIntAttr(countersEl, "aborted"),
             ["inconclusive"] = GetIntAttr(countersEl, "inconclusive"),
         };
 
@@ -78,9 +91,9 @@ public static class TrxToJsonConverter
             .Element(ns + "StdOut");
 
         if (!string.IsNullOrWhiteSpace(stdOut))
-            diagnostics["stdout"] = stdOut;
+            diagnostics["stdout"] = Trunc(stdOut);
 
-        // ---- TestDefinitions lookup: testId -> (className, fullyQualifiedName) ----
+        // TestDefinitions lookup: testId -> (className, fullyQualifiedName)
         var defLookup = root
             .Element(ns + "TestDefinitions")?
             .Elements(ns + "UnitTest")
@@ -99,7 +112,6 @@ public static class TrxToJsonConverter
             .ToDictionary(x => x.TestId!, x => (x.ClassName, x.FullyQualifiedName))
             ?? new Dictionary<string, (string? ClassName, string? FullyQualifiedName)>();
 
-        // ---- tests[] from UnitTestResult ----
         var tests = new List<Dictionary<string, object?>>();
 
         var unitTestResults = root
@@ -139,15 +151,15 @@ public static class TrxToJsonConverter
             tests.Add(new Dictionary<string, object?>
             {
                 ["id"] = !string.IsNullOrWhiteSpace(executionId) ? executionId : (testId ?? Guid.NewGuid().ToString("D")),
-                ["name"] = testName,
-                ["className"] = className,
-                ["fullyQualifiedName"] = fqn,
+                ["name"] = Trunc(testName),
+                ["className"] = Trunc(className),
+                ["fullyQualifiedName"] = Trunc(fqn),
                 ["outcome"] = outcome,
                 ["durationMs"] = durationMs,
                 ["startedAt"] = tStarted,
                 ["finishedAt"] = tFinished,
-                ["message"] = NullIfBlank(message),
-                ["stackTrace"] = NullIfBlank(stack)
+                ["message"] = Trunc(NullIfBlank(message)),
+                ["stackTrace"] = Trunc(NullIfBlank(stack))
             });
         }
 
@@ -261,4 +273,11 @@ public static class TrxToJsonConverter
     }
 
     private static string? NullIfBlank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
+
+    private static string? Trunc(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        if (s.Length <= MaxFieldChars) return s;
+        return s.Substring(0, MaxFieldChars) + "\n...[TRUNCATED: field limit]...";
+    }
 }
