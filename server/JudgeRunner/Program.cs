@@ -7,6 +7,10 @@ static class Program
         // Toggle cleanup: pass "--keep" to inspect the workspace afterwards.
         bool keep = args.Any(a => a.Equals("--keep", StringComparison.OrdinalIgnoreCase));
 
+        // User and Group ID for TRX file permissions, perhaps this should be better handled, not sure how though
+        var uid = "1000";
+        var gid = "1000";
+
         // Find repo root and template directory (relative to this executable's working directory).
         string repoRoot = FindRepoRoot();
         string templateDir = Path.Combine(repoRoot, "judge-template");
@@ -21,7 +25,8 @@ static class Program
         string workRoot = Path.Combine(Path.GetTempPath(), "tracepoint-workspaces");
         Directory.CreateDirectory(workRoot);
 
-        string workDir = Path.Combine(workRoot, Guid.NewGuid().ToString("N"));
+        string guidString = Guid.NewGuid().ToString("N");
+        string workDir = Path.Combine(workRoot, guidString);
         Directory.CreateDirectory(workDir);
 
         Console.WriteLine($"[JudgeRunner] Workspace: {workDir}");
@@ -33,8 +38,17 @@ static class Program
 
             // Run dotnet test INSIDE the workspace.
             var result = RunProcess(
-                fileName: "dotnet",
-                arguments: "test",
+                fileName: "docker",
+                arguments:
+                    $"run --rm " +
+                    $"--user {uid}:{gid} " +
+                    $"--cpus=1 " +
+                    $"--memory=512m " +
+                    $"--pids-limit=128 " +
+                    $"-v \"{workDir}:/workspace\" " +
+                    $"-w /workspace " +
+                    $"mcr.microsoft.com/dotnet/sdk:10.0 " +
+                    $"dotnet test --logger \"trx;LogFileName=results.trx\"",
                 workingDirectory: workDir,
                 timeout: TimeSpan.FromMinutes(2)
             );
@@ -48,8 +62,22 @@ static class Program
             Console.WriteLine($"[JudgeRunner] ExitCode: {result.ExitCode}");
             Console.WriteLine($"[JudgeRunner] TimedOut: {result.TimedOut}");
 
-            // If you want this step to strictly match the acceptance criteria,
-            // treat timeout as failure:
+            Console.WriteLine("----- PARSING TRX FILE -----");
+            string testsDir = Path.Combine(workDir, "tests");
+            string testsProject = Path.Combine(testsDir, "Challenge.Tests");
+            string testResultsDir = Path.Combine(testsProject, "TestResults");
+            string trxFilePath = Path.Combine(testResultsDir, "results.trx");
+
+            if (!File.Exists(trxFilePath))
+            {
+                Console.Error.WriteLine($"ERROR: TRX file not found at: {trxFilePath}");
+                return 1;
+            }
+
+            var json = TrxToJsonConverter.ConvertToJson(guidString, status: "Completed", trxFilePath);
+            Console.WriteLine(json);
+
+            // Treat timeout as failure.
             int exitCode = result.TimedOut ? 124 : result.ExitCode;
 
             return exitCode;
