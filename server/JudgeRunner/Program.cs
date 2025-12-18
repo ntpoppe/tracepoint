@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 static class Program
@@ -12,7 +13,7 @@ static class Program
         var uid = "1000";
         var gid = "1000";
 
-        // Find repo root and template directory (relative to this executable's working directory).
+        // Find repo root and template directory
         string repoRoot = FindRepoRoot();
         string templateDir = Path.Combine(repoRoot, "judge-template");
 
@@ -52,10 +53,14 @@ static class Program
                 $"--user {uid}:{gid} " +
                 $"--cpus=1 " +
                 $"--memory=512m " +
+                $"--memory-swap=512m " +
                 $"--pids-limit=128 " +
                 $"-v \"{workDir}:/workspace\" " +
                 $"-v \"{nugetCacheRoot}:{nugetMountPath}\" " +
                 $"-e NUGET_PACKAGES={nugetMountPath} " +
+                $"-e DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=1 " +
+                $"-e DOTNET_CLI_TELEMETRY_OPTOUT=1 " +
+                $"-e DOTNET_NOLOGO=1 " +
                 $"-w /workspace " +
                 $"mcr.microsoft.com/dotnet/sdk:10.0 " +
                 $"dotnet restore";
@@ -102,6 +107,9 @@ static class Program
                 $"-v \"{workDir}:/workspace\" " +
                 $"-v \"{nugetCacheRoot}:{nugetMountPath}\" " +
                 $"-e NUGET_PACKAGES={nugetMountPath} " +
+                $"-e DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=1 " +
+                $"-e DOTNET_CLI_TELEMETRY_OPTOUT=1 " +
+                $"-e DOTNET_NOLOGO=1 " +
                 $"-w /workspace " +
                 $"mcr.microsoft.com/dotnet/sdk:10.0 " +
                 $"dotnet test --no-restore --logger \"trx;LogFileName=results.trx\"";
@@ -131,9 +139,7 @@ static class Program
 
             Console.WriteLine("----- PARSING TRX FILE -----");
 
-            string testResultsRoot = Path.Combine(workDir, "TestResults");
-            string? trxFilePath = FindTrxFile(testResultsRoot, "results.trx");
-
+            string? trxFilePath = FindTrxFile(workDir, "results.trx");
             if (trxFilePath is null)
             {
                 if (LooksLikeResourceLimit(testResult))
@@ -142,12 +148,52 @@ static class Program
                     return testResult.ExitCode == 0 ? 137 : testResult.ExitCode;
                 }
 
-                Console.WriteLine(BuildRunnerErrorJson(guidString, "test", testResult));
-                return 127;
+                // If dotnet test returned success but we can't find TRX, treat as runner error (missing artifact).
+                Console.WriteLine(BuildRunnerErrorJson(guidString, "test_missing_trx", testResult));
+                return testResult.ExitCode == 0 ? 2 : testResult.ExitCode;
             }
 
-            var json = TrxToJsonConverter.ConvertToJson(guidString, status: "Completed", trxFilePath);
-            Console.WriteLine(json);
+            // Flood-hardening: do not parse/return a massive TRX (usually caused by stdout spam).
+            // Keep the threshold small for MVP; tune later.
+            const long maxTrxBytes = 2_000_000; // 2 MB
+            var trxInfo = new FileInfo(trxFilePath);
+            if (trxInfo.Exists && trxInfo.Length > maxTrxBytes)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    submissionId = guidString,
+                    status = "resource_limit",
+                    diagnostics = new
+                    {
+                        note = "TRX exceeded maximum size (likely output flooding).",
+                        trxBytes = trxInfo.Length,
+                        maxTrxBytes,
+                        exitCode = testResult.ExitCode
+                    }
+                }));
+                return testResult.ExitCode == 0 ? 137 : testResult.ExitCode;
+            }
+
+            try
+            {
+                var json = TrxToJsonConverter.ConvertToJson(guidString, status: "Completed", trxFilePath);
+                Console.WriteLine(json);
+            }
+            catch (Exception ex)
+            {
+                // Converter failures should not take down the runner; surface diagnostic safely.
+                var converterFail = new ProcessResult(
+                    ExitCode: testResult.ExitCode,
+                    Stdout: testResult.Stdout,
+                    Stderr: (testResult.Stderr ?? "") + "\n[TRX PARSE ERROR] " + ex.GetType().Name + ": " + ex.Message,
+                    TimedOut: false,
+                    StdoutTruncated: testResult.StdoutTruncated,
+                    StderrTruncated: testResult.StderrTruncated
+                );
+
+                Console.WriteLine(BuildRunnerErrorJson(guidString, "trx_parse", converterFail));
+                return testResult.ExitCode == 0 ? 3 : testResult.ExitCode;
+            }
 
             return testResult.ExitCode;
         }
@@ -270,6 +316,9 @@ static class Program
         string workingDirectory,
         TimeSpan timeout)
     {
+        const int maxStdoutChars = 64_000;
+        const int maxStderrChars = 64_000;
+
         var psi = new ProcessStartInfo
         {
             FileName = fileName,
@@ -283,8 +332,8 @@ static class Program
         using var proc = new Process { StartInfo = psi };
         proc.Start();
 
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-        var stderrTask = proc.StandardError.ReadToEndAsync();
+        var stdoutPump = PumpLimitedAsync(proc.StandardOutput, maxStdoutChars);
+        var stderrPump = PumpLimitedAsync(proc.StandardError, maxStderrChars);
 
         bool exited = proc.WaitForExit((int)timeout.TotalMilliseconds);
         bool timedOut = !exited;
@@ -298,14 +347,70 @@ static class Program
             proc.WaitForExit();
         }
 
-        Task.WaitAll(new Task[] { stdoutTask, stderrTask }, TimeSpan.FromSeconds(5));
+        Task.WaitAll(new Task[] { stdoutPump, stderrPump }, TimeSpan.FromSeconds(5));
+
+        var (stdout, stdoutTruncated) = stdoutPump.IsCompleted ? stdoutPump.Result : ("", true);
+        var (stderr, stderrTruncated) = stderrPump.IsCompleted ? stderrPump.Result : ("", true);
 
         return new ProcessResult(
             ExitCode: timedOut ? -1 : proc.ExitCode,
-            Stdout: stdoutTask.IsCompleted ? stdoutTask.Result : "",
-            Stderr: stderrTask.IsCompleted ? stderrTask.Result : "",
-            TimedOut: timedOut
+            Stdout: stdout,
+            Stderr: stderr,
+            TimedOut: timedOut,
+            StdoutTruncated: stdoutTruncated,
+            StderrTruncated: stderrTruncated
         );
+    }
+
+    private static async Task<(string Text, bool Truncated)> PumpLimitedAsync(StreamReader reader, int maxChars)
+    {
+        var sb = new StringBuilder(capacity: Math.Min(maxChars, 8_192));
+        var buffer = new char[8_192];
+
+        int kept = 0;
+        bool truncated = false;
+        bool markerAdded = false;
+
+        while (true)
+        {
+            int read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+            if (read <= 0) break;
+
+            if (kept < maxChars)
+            {
+                int toKeep = Math.Min(read, maxChars - kept);
+                if (toKeep > 0)
+                {
+                    sb.Append(buffer, 0, toKeep);
+                    kept += toKeep;
+                }
+
+                if (toKeep < read)
+                {
+                    truncated = true;
+                    if (!markerAdded)
+                    {
+                        sb.AppendLine();
+                        sb.AppendLine("...[TRUNCATED: output exceeded limit]...");
+                        markerAdded = true;
+                    }
+                }
+            }
+            else
+            {
+                truncated = true;
+                if (!markerAdded)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine("...[TRUNCATED: output exceeded limit]...");
+                    markerAdded = true;
+                }
+            }
+
+            // Keep draining after truncation to avoid blocking the child process.
+        }
+
+        return (sb.ToString(), truncated);
     }
 
     private static string? FindTrxFile(string testResultsRoot, string preferredName)
@@ -330,7 +435,9 @@ static class Program
         var s = (r.Stderr ?? "") + "\n" + (r.Stdout ?? "");
         return s.Contains("Out of memory", StringComparison.OrdinalIgnoreCase) ||
                s.Contains("OutOfMemoryException", StringComparison.OrdinalIgnoreCase) ||
-               s.Contains("Killed", StringComparison.OrdinalIgnoreCase);
+               s.Contains("Killed", StringComparison.OrdinalIgnoreCase) ||
+               s.Contains("Test host process crashed", StringComparison.OrdinalIgnoreCase) ||
+               s.Contains("Test Run Aborted", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildTimeoutJson(string submissionId)
@@ -350,10 +457,12 @@ static class Program
             status = "resource_limit",
             diagnostics = new
             {
-                note = "Memory limit exceeded; container was terminated.",
+                note = "Resource limit exceeded; container or test host was terminated.",
                 exitCode = r.ExitCode,
                 stdout = r.Stdout,
-                stderr = r.Stderr
+                stdoutTruncated = r.StdoutTruncated,
+                stderr = r.Stderr,
+                stderrTruncated = r.StderrTruncated
             }
         });
     }
@@ -369,10 +478,19 @@ static class Program
                 phase,
                 exitCode = r.ExitCode,
                 stdout = r.Stdout,
-                stderr = r.Stderr
+                stdoutTruncated = r.StdoutTruncated,
+                stderr = r.Stderr,
+                stderrTruncated = r.StderrTruncated
             }
         });
     }
 
-    private sealed record ProcessResult(int ExitCode, string Stdout, string Stderr, bool TimedOut);
+    private sealed record ProcessResult(
+        int ExitCode,
+        string Stdout,
+        string Stderr,
+        bool TimedOut,
+        bool StdoutTruncated,
+        bool StderrTruncated
+    );
 }
