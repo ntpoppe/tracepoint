@@ -4,6 +4,8 @@ using System.Text.Json.Serialization;
 using System.Xml;
 using System.Xml.Linq;
 
+namespace JudgeRunner.Converters;
+
 public static class TrxToJsonConverter
 {
     // Flood-hardening: cap any single TRX-derived text field before it enters JSON.
@@ -128,7 +130,7 @@ public static class TrxToJsonConverter
             var rawOutcome = (string?)r.Attribute("outcome");
             var outcome = NormalizeOutcome(rawOutcome);
 
-            // Treat timeout as failure (your rule)
+            // Treat timeout as failure
             if (string.Equals(rawOutcome, "Timeout", StringComparison.OrdinalIgnoreCase))
                 outcome = "Failed";
 

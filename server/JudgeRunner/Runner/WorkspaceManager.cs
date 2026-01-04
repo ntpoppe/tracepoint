@@ -1,3 +1,11 @@
+using JudgeRunner.Models;
+
+namespace JudgeRunner;
+
+/// <summary>
+/// Manages the creation and cleanup of workspace directories for judge executions,
+/// ensuring proper isolation and organization of test environments.
+/// </summary>
 public sealed class WorkspaceManager
 {
     private readonly string _workRoot;
@@ -27,7 +35,7 @@ public sealed class WorkspaceManager
 
         CopyDirectory(templateDir, workDir);
 
-        string nugetCacheRoot = Path.Combine(_workRoot, "_nuget-cache");
+        string nugetCacheRoot = Path.Combine(workDir, "_nuget-cache");
         Directory.CreateDirectory(nugetCacheRoot);
 
         return new WorkspacePaths(
@@ -39,22 +47,22 @@ public sealed class WorkspaceManager
         );
     }
 
-    public void CleanupWorkspace(WorkspacePaths workspace, bool keep)
+    public void CleanupWorkDirectory(string workDir, bool keep)
     {
         if (keep)
         {
-            Console.WriteLine($"[JudgeRunner] Keeping workspace (per --keep): {workspace.WorkDir}");
+            Console.WriteLine($"[JudgeRunner] Keeping workspace (per --keep): {workDir}");
             return;
         }
 
         try
         {
-            Directory.Delete(workspace.WorkDir, recursive: true);
-            Console.WriteLine($"[JudgeRunner] Cleaned workspace: {workspace.WorkDir}");
+            Directory.Delete(workDir, recursive: true);
+            Console.WriteLine($"[JudgeRunner] Cleaned workspace: {workDir}");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[JudgeRunner] WARNING: Failed to cleanup workspace: {ex.Message}");
+            Console.Error.WriteLine($"[JudgeRunner] WARNING: Failed to cleanup workspace: {ex.Message} Path: {workDir}");
         }
     }
 
@@ -110,12 +118,5 @@ public sealed class WorkspaceManager
     }
 }
 
-public sealed record WorkspacePaths(
-    string RepoRoot,
-    string TemplateDir,
-    string WorkRoot,
-    string WorkDir,
-    string NugetCacheRoot
-);
 
 

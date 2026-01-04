@@ -1,6 +1,13 @@
 using System.Diagnostics;
 using System.Text;
+using JudgeRunner.Models;
 
+namespace JudgeRunner.Process;
+
+/// <summary>
+/// Executes processes with limited output buffering, truncating excessively long
+/// output to prevent memory bloat and ensure timely termination.
+/// </summary>
 public sealed class ProcessExecutor
 {
     private const int MaxStdoutChars = 64_000;
@@ -22,7 +29,7 @@ public sealed class ProcessExecutor
             UseShellExecute = false,
         };
 
-        using var proc = new Process { StartInfo = psi };
+        using var proc = new System.Diagnostics.Process { StartInfo = psi };
         proc.Start();
 
         var stdoutPump = PumpLimitedAsync(proc.StandardOutput, MaxStdoutChars);
@@ -55,6 +62,10 @@ public sealed class ProcessExecutor
         );
     }
 
+    /// <summary>
+    /// Reads output from a <see cref="StreamReader"/>, keeping up to <paramref name="maxChars"/> chars.
+    /// If output is truncated, adds a marker and sets <c>Truncated</c> to true.
+    /// </summary>
     private static async Task<(string Text, bool Truncated)> PumpLimitedAsync(StreamReader reader, int maxChars)
     {
         var sb = new StringBuilder(capacity: Math.Min(maxChars, 8_192));
@@ -106,14 +117,4 @@ public sealed class ProcessExecutor
         return (sb.ToString(), truncated);
     }
 }
-
-public sealed record ProcessResult(
-    int ExitCode,
-    string Stdout,
-    string Stderr,
-    bool TimedOut,
-    bool StdoutTruncated,
-    bool StderrTruncated
-);
-
 
