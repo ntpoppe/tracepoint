@@ -1,3 +1,5 @@
+namespace JudgeRunner.Docker;
+
 public sealed class DockerCommandBuilder
 {
     private readonly string _uid;
@@ -16,9 +18,7 @@ public sealed class DockerCommandBuilder
     }
 
     public string BuildRestoreArguments(string containerName, string workDir, string nugetCacheRoot)
-    {
-        return
-            $"run --rm " +
+        =>  $"run --rm " +
             $"--name {containerName} " +
             $"--user {_uid}:{_gid} " +
             $"--cpus=1 " +
@@ -34,12 +34,9 @@ public sealed class DockerCommandBuilder
             $"-w /workspace " +
             $"{_image} " +
             $"dotnet restore";
-    }
 
     public string BuildTestArguments(string containerName, string workDir, string nugetCacheRoot, string trxFileName)
-    {
-        return
-            $"run --rm " +
+        =>  $"run --rm " +
             $"--name {containerName} " +
             $"--network none " +
             $"--init " +
@@ -57,7 +54,6 @@ public sealed class DockerCommandBuilder
             $"-w /workspace " +
             $"{_image} " +
             $"dotnet test --no-restore --logger \"trx;LogFileName={trxFileName}\"";
-    }
 }
 
 
