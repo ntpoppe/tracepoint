@@ -1,4 +1,4 @@
-﻿using JudgeRunner;
+﻿using Tracepoint.JudgeRunner;
 
 static class Program
 {

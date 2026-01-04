@@ -1,8 +1,8 @@
 using System.Text.Json;
-using JudgeRunner.Models;
-using JudgeRunner.Process;
+using Tracepoint.JudgeRunner.Models;
+using Tracepoint.JudgeRunner.Process;
 
-namespace JudgeRunner;
+namespace Tracepoint.JudgeRunner;
 
 /// <summary>
 /// Builds results for judge executions, generating JSON-formatted output for different

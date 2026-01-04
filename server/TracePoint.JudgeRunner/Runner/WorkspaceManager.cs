@@ -1,6 +1,6 @@
-using JudgeRunner.Models;
+using Tracepoint.JudgeRunner.Models;
 
-namespace JudgeRunner;
+namespace Tracepoint.JudgeRunner;
 
 /// <summary>
 /// Manages the creation and cleanup of workspace directories for judge executions,
