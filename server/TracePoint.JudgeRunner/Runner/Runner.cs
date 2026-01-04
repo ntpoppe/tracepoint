@@ -1,9 +1,9 @@
-using JudgeRunner.Docker;
-using JudgeRunner.Process;
-using JudgeRunner.Converters;
-using JudgeRunner.Models;
+using Tracepoint.JudgeRunner.Docker;
+using Tracepoint.JudgeRunner.Process;
+using Tracepoint.JudgeRunner.Converters;
+using Tracepoint.JudgeRunner.Models;
 
-namespace JudgeRunner;
+namespace Tracepoint.JudgeRunner;
 
 public class Runner
 {

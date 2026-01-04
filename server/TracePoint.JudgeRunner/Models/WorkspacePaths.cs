@@ -1,4 +1,4 @@
-namespace JudgeRunner.Models;
+namespace Tracepoint.JudgeRunner.Models;
 
 /// <summary>
 /// Represents the paths and metadata for a workspace directory used in judge executions,

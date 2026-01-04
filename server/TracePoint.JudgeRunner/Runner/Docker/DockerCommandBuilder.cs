@@ -1,4 +1,4 @@
-namespace JudgeRunner.Docker;
+namespace Tracepoint.JudgeRunner.Docker;
 
 public sealed class DockerCommandBuilder
 {

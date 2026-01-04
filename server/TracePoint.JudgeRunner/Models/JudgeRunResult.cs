@@ -1,4 +1,4 @@
-namespace JudgeRunner.Models;
+namespace Tracepoint.JudgeRunner.Models;
 
 /// <summary>
 /// Represents the result of a judge run, containing output in JSON format and the exit code.

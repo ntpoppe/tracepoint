@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 using System.Xml;
 using System.Xml.Linq;
 
-namespace JudgeRunner.Converters;
+namespace Tracepoint.JudgeRunner.Converters;
 
 public static class TrxToJsonConverter
 {

@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Text;
-using JudgeRunner.Models;
+using Tracepoint.JudgeRunner.Models;
 
-namespace JudgeRunner.Process;
+namespace Tracepoint.JudgeRunner.Process;
 
 /// <summary>
 /// Executes processes with limited output buffering, truncating excessively long
