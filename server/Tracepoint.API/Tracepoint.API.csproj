@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowMissingPrunePackageData>true</AllowMissingPrunePackageData>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../TracePoint.Application/TracePoint.Application.csproj" />
+    <ProjectReference Include="../TracePoint.Infrastructure/TracePoint.Infrastructure.csproj" />
+    <ProjectReference Include="../TracePoint.Domain/TracePoint.Domain.csproj" />
+  </ItemGroup>
+
+</Project>
